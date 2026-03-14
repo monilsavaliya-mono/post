@@ -1,10 +1,11 @@
 {
   "name": "tg-superbot",
-  "version": "1.0.0",
-  "description": "Telegram SuperBot – Instagram downloader + modular service features",
+  "version": "2.0.0",
+  "description": "Telegram SuperBot — Multi-platform media downloader",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "pip install -q yt-dlp || pip3 install -q yt-dlp || true"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0"
