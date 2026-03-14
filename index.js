@@ -1,7 +1,7 @@
 // ============================================================
-//  SUPERBOT — Multi-Platform Media Downloader
+//  SUPERBOT v2 — Multi-Platform Media Downloader
 //  Supports: Instagram, YouTube, Twitter/X, Reddit, Threads
-//  + TikTok, Facebook, Pinterest and more via yt-dlp
+//  TikTok, Facebook, Pinterest + more via yt-dlp
 // ============================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -11,6 +11,8 @@ const path = require('path');
 const fs = require('fs');
 
 const TOKEN = process.env.BOT_TOKEN || 'PASTE_YOUR_TOKEN_HERE';
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const HAS_COOKIES = fs.existsSync(COOKIES_PATH);
 
 const execAsync = promisify(exec);
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -80,7 +82,6 @@ bot.on('message', async (msg) => {
   console.log(`📩 [${new Date().toLocaleTimeString()}] ${user}: ${text.slice(0, 100)}`);
 
   const detected = detectPlatform(text);
-
   if (detected) {
     await handleDownload(chatId, detected.url, detected.platform);
     return;
@@ -93,7 +94,6 @@ bot.on('message', async (msg) => {
 
 // ─── Universal downloader ─────────────────────────────────────────────────────
 async function handleDownload(chatId, url, platform) {
-  // Send "working" message
   let ackMsg;
   try {
     ackMsg = await bot.sendMessage(chatId,
@@ -105,9 +105,12 @@ async function handleDownload(chatId, url, platform) {
   const uid = Date.now();
   const outTemplate = path.join(TEMP_DIR, `dl_${uid}_%(id)s.%(ext)s`);
 
-  // yt-dlp command — best quality video + audio merged
+  // Build yt-dlp command — add cookies if available
+  const cookiesArg = HAS_COOKIES ? `--cookies "${COOKIES_PATH}"` : '';
+
   const cmd = [
     'yt-dlp',
+    cookiesArg,
     `"${url}"`,
     '-o', `"${outTemplate}"`,
     '--no-playlist',
@@ -118,24 +121,26 @@ async function handleDownload(chatId, url, platform) {
     '--convert-thumbnails', 'jpg',
     '--no-warnings',
     '--socket-timeout', '30',
-  ].join(' ');
+  ].filter(Boolean).join(' ');
 
   console.log(`⬇️  Downloading: ${url}`);
+  if (HAS_COOKIES) console.log('🍪 Using cookies');
 
-  // Run download
   try {
     await execAsync(cmd, { timeout: 120000 });
   } catch (err) {
     const e = String(err?.stderr || err?.message || '');
-    console.error(`❌ Download error:`, e.slice(0, 200));
+    console.error(`❌ Download error:`, e.slice(0, 300));
 
     let errMsg = `❌ Download failed from ${platform.name}.`;
-    if (/private|login required/i.test(e))  errMsg = `🔒 This content is *private*. Only public posts work.`;
-    if (/not available/i.test(e))           errMsg = `❌ Content not available in your region or has been removed.`;
-    if (/filesize/i.test(e))               errMsg = `⚠️ File too large for Telegram (50MB limit).`;
-    if (/404|not found/i.test(e))          errMsg = `❌ Content not found. It may have been deleted.`;
-    if (/ffmpeg/i.test(e))                 errMsg = `❌ ffmpeg not installed on server. Contact admin.`;
-    if (/unsupported url/i.test(e))        errMsg = `❌ This link type isn't supported yet.`;
+    if (/login required|cookies/i.test(e))  errMsg = `🔒 This content requires login. Add cookies to enable.`;
+    if (/private/i.test(e))                 errMsg = `🔒 This content is *private*. Only public posts work.`;
+    if (/not available/i.test(e))           errMsg = `❌ Content not available or has been removed.`;
+    if (/filesize/i.test(e))                errMsg = `⚠️ File too large for Telegram (50MB limit).`;
+    if (/404|not found/i.test(e))           errMsg = `❌ Content not found. It may have been deleted.`;
+    if (/ffmpeg/i.test(e))                  errMsg = `❌ ffmpeg not installed on server.`;
+    if (/unsupported url/i.test(e))         errMsg = `❌ This link type isn't supported yet.`;
+    if (/rate.limit/i.test(e))              errMsg = `⏳ Rate limited by ${platform.name}. Try again in a few minutes.`;
 
     await bot.editMessageText(errMsg, {
       chat_id: chatId, message_id: ackMsg.message_id, parse_mode: 'Markdown'
@@ -143,7 +148,6 @@ async function handleDownload(chatId, url, platform) {
     return;
   }
 
-  // Find all downloaded files
   const files = fs.readdirSync(TEMP_DIR)
     .filter(f => f.startsWith(`dl_${uid}_`))
     .map(f => path.join(TEMP_DIR, f));
@@ -155,7 +159,6 @@ async function handleDownload(chatId, url, platform) {
     return;
   }
 
-  // Prefer video, fall back to image
   const videos = files.filter(f => /\.(mp4|mkv|webm|mov)$/i.test(f));
   const images = files.filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f));
   const toSend = videos.length ? videos : images;
@@ -165,47 +168,35 @@ async function handleDownload(chatId, url, platform) {
   let sent = 0;
   for (const filePath of toSend) {
     if (!fs.existsSync(filePath)) continue;
-
     const mb = fs.statSync(filePath).size / (1024 * 1024);
     if (mb > 50) {
       await bot.sendMessage(chatId, `⚠️ File is ${mb.toFixed(1)}MB — exceeds Telegram's 50MB limit.`);
       continue;
     }
-
     const caption = `${platform.emoji} *${platform.name}*\n_Downloaded by SuperBot_ ✨`;
-
     try {
       if (/\.(mp4|mkv|webm|mov)$/i.test(filePath)) {
-        await bot.sendVideo(chatId, filePath, {
-          caption,
-          parse_mode: 'Markdown',
-          supports_streaming: true,
-        });
+        await bot.sendVideo(chatId, filePath, { caption, parse_mode: 'Markdown', supports_streaming: true });
       } else {
-        await bot.sendPhoto(chatId, filePath, {
-          caption,
-          parse_mode: 'Markdown',
-        });
+        await bot.sendPhoto(chatId, filePath, { caption, parse_mode: 'Markdown' });
       }
       sent++;
       console.log(`✅ Sent ${path.basename(filePath)} (${mb.toFixed(1)}MB)`);
-    } catch (e) {
-      console.error('Send error:', e.message);
-    }
+    } catch (e) { console.error('Send error:', e.message); }
   }
 
-  if (!sent) {
-    await bot.sendMessage(chatId, `😕 Could not send the file. Please try another link.`);
-  }
-
-  // Cleanup
+  if (!sent) await bot.sendMessage(chatId, `😕 Could not send the file. Please try another link.`);
   for (const f of files) { try { fs.unlinkSync(f); } catch {} }
 }
 
 // ─── Error handling ───────────────────────────────────────────────────────────
 bot.on('polling_error', (err) => {
+  // 409 = another instance running, 404 = bad token
   if (err.code === 'ETELEGRAM') {
-    console.error('Telegram error — check your BOT_TOKEN');
+    const msg = err.message || '';
+    if (msg.includes('409')) console.error('⚠️  Conflict: another bot instance is running! Stop the one on your PC.');
+    else if (msg.includes('404')) console.error('❌ Invalid BOT_TOKEN — check your Railway variable.');
+    else console.error('Telegram error:', msg.slice(0, 100));
   } else {
     console.error('Polling error:', err.message);
   }
@@ -225,4 +216,5 @@ console.log('🧵 Threads    ✅');
 console.log('🎵 TikTok     ✅');
 console.log('👤 Facebook   ✅');
 console.log('📌 Pinterest  ✅');
+console.log(HAS_COOKIES ? '🍪 Cookies loaded — Instagram fully unlocked!' : '⚠️  No cookies.txt found — some Instagram content may fail');
 console.log('\nWaiting for links...\n');
